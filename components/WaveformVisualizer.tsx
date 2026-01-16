@@ -1,5 +1,6 @@
 
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { audioEngine } from '../audioEngine';
 
 export type VisualizerMode = 'waveform' | 'bars' | 'radial' | 'particles';
 export type ColorPalette = 'indigo' | 'emerald' | 'rose' | 'amber' | 'cyan' | 'violet';
@@ -10,12 +11,6 @@ interface WaveformVisualizerProps {
   mode: VisualizerMode;
   palette: ColorPalette;
 }
-
-// Global state to ensure we only ever have one context and source node per element
-const audioState = {
-  context: null as AudioContext | null,
-  sourceNodes: new Map<any, AudioNode>(),
-};
 
 const PALETTE_COLORS: Record<ColorPalette, { primary: string; secondary: string; glow: string; rgba: (a: number) => string }> = {
   indigo: { primary: '#6366f1', secondary: '#818cf8', glow: 'rgba(99, 102, 241, 0.5)', rgba: (a) => `rgba(99, 102, 241, ${a})` },
@@ -29,62 +24,69 @@ const PALETTE_COLORS: Record<ColorPalette, { primary: string; secondary: string;
 export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ source, sensitivity, mode, palette }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animationFrameRef = useRef<number | null>(null);
+  
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const timeDataRef = useRef<Uint8Array | null>(null);
+  const freqDataRef = useRef<Uint8Array | null>(null);
+  const [hasError, setHasError] = useState(false);
 
+  // 1. Audio Graph Connection Effect
   useEffect(() => {
-    if (!source) return;
-
-    // Initialize AudioContext only once
-    if (!audioState.context) {
-      audioState.context = new (window.AudioContext || (window as any).webkitAudioContext)();
+    if (!source) {
+      analyserRef.current = null;
+      return;
     }
-    
-    const ctx_audio = audioState.context;
-    const analyser = ctx_audio.createAnalyser();
+
+    const ctx = audioEngine.getContext();
+    const analyser = ctx.createAnalyser();
     analyser.fftSize = 512;
     
     let sourceNode: AudioNode | null = null;
 
     try {
-      if (source instanceof MediaStream) {
-        // MediaStreamSourceNodes can be recreated safely
-        sourceNode = ctx_audio.createMediaStreamSource(source);
-      } else {
-        // MediaElementSourceNodes MUST be cached/singleton per element
-        if (audioState.sourceNodes.has(source)) {
-          sourceNode = audioState.sourceNodes.get(source)!;
-        } else {
-          sourceNode = ctx_audio.createMediaElementSource(source);
-          audioState.sourceNodes.set(source, sourceNode);
-          // Only connect to destination ONCE for media elements to prevent volume issues/echo
-          sourceNode.connect(ctx_audio.destination);
-        }
-      }
+      sourceNode = audioEngine.getOrCreateSourceNode(source);
+      sourceNode.connect(analyser);
       
-      if (sourceNode) {
-        sourceNode.connect(analyser);
-      }
+      analyserRef.current = analyser;
+      timeDataRef.current = new Uint8Array(analyser.frequencyBinCount);
+      freqDataRef.current = new Uint8Array(analyser.frequencyBinCount);
+      setHasError(false);
     } catch (err) {
       console.warn("WaveformVisualizer: Connection failed", err);
-      // Even if connection fails, we want to allow the cleanup logic to run
+      setHasError(true);
     }
-    
-    const bufferLength = analyser.frequencyBinCount;
-    const timeData = new Uint8Array(bufferLength);
-    const freqData = new Uint8Array(bufferLength);
-    
+
+    return () => {
+      if (sourceNode && analyser) {
+        try {
+          sourceNode.disconnect(analyser);
+        } catch (e) { /* ignore */ }
+      }
+      analyser.disconnect();
+      analyserRef.current = null;
+    };
+  }, [source]);
+
+  // 2. Rendering Loop Effect
+  useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas) return;
+    if (!canvas || !analyserRef.current || !timeDataRef.current || !freqDataRef.current) return;
+
     const ctx_canvas = canvas.getContext('2d', { alpha: false });
     if (!ctx_canvas) return;
 
     const colors = PALETTE_COLORS[palette];
-
+    
     const draw = () => {
+      const analyser = analyserRef.current;
+      const timeData = timeDataRef.current;
+      const freqData = freqDataRef.current;
+
+      if (!analyser || !timeData || !freqData) return;
+
       animationFrameRef.current = requestAnimationFrame(draw);
       
-      if (ctx_audio.state === 'suspended') {
-        ctx_audio.resume().catch(() => {});
-      }
+      audioEngine.resume().catch(() => {});
 
       analyser.getByteTimeDomainData(timeData);
       analyser.getByteFrequencyData(freqData);
@@ -95,11 +97,11 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ source, 
 
       const centerY = height / 2;
       const centerX = width / 2;
+      const bufferLength = analyser.frequencyBinCount;
 
       ctx_canvas.fillStyle = '#020617';
       ctx_canvas.fillRect(0, 0, width, height);
 
-      // Render video background if available
       if (source instanceof HTMLVideoElement && source.readyState >= 2) {
         const vW = source.videoWidth;
         const vH = source.videoHeight;
@@ -146,7 +148,6 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ source, 
         }
         ctx_canvas.stroke();
         ctx_canvas.shadowBlur = 0;
-
       } else if (mode === 'bars') {
         const barWidth = (width / bufferLength) * 2.5;
         let x = 0;
@@ -201,22 +202,22 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ source, 
 
     return () => {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
-      if (sourceNode && analyser) {
-        try {
-          sourceNode.disconnect(analyser);
-        } catch (e) {
-          // Ignore disconnection errors
-        }
-      }
-      analyser.disconnect();
     };
   }, [source, sensitivity, mode, palette]);
+
+  if (hasError) {
+    return (
+      <div className="flex items-center justify-center w-full h-full text-slate-500 text-sm bg-slate-900 border border-white/5">
+        Visualizer engine connection failed. Please restart capture.
+      </div>
+    );
+  }
 
   return (
     <div className="w-full h-full relative">
       <canvas 
         ref={canvasRef} 
-        className="w-full h-full block rounded-xl overflow-hidden"
+        className="w-full h-full block"
       />
     </div>
   );

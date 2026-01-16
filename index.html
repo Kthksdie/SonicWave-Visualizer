@@ -6,6 +6,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SonicWave Visualizer</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      /* Ensure no rounded corners in native fullscreen mode */
+      :fullscreen {
+        border-radius: 0 !important;
+      }
+      ::backdrop {
+        background-color: #020617;
+      }
+    </style>
 <script type="importmap">
 {
   "imports": {
