@@ -2,7 +2,7 @@
 import React, { useEffect, useRef } from 'react';
 
 interface RawMonitorProps {
-  source: MediaStream | HTMLAudioElement | null;
+  source: MediaStream | HTMLAudioElement | HTMLVideoElement | null;
 }
 
 export const RawMonitor: React.FC<RawMonitorProps> = ({ source }) => {
@@ -17,24 +17,18 @@ export const RawMonitor: React.FC<RawMonitorProps> = ({ source }) => {
     const analyser = audioContext.createAnalyser();
     let audioSourceNode: AudioNode;
 
-    if (source instanceof MediaStream) {
-      audioSourceNode = audioContext.createMediaStreamSource(source);
-      audioSourceNode.connect(analyser);
-    } else if (source instanceof HTMLAudioElement) {
-      // Note: We don't connect to destination here to avoid double audio, 
-      // but we need to be careful with MediaElementSource limitations (only one source node per element).
-      // However, since we are creating a separate context for the monitor, this might be tricky 
-      // with a single HTMLAudioElement. For streams, it works fine.
-      // To keep it simple and robust, we'll only monitor if it's a MediaStream or handle element carefully.
-      try {
+    try {
+      if (source instanceof MediaStream) {
+        audioSourceNode = audioContext.createMediaStreamSource(source);
+      } else if (source instanceof HTMLAudioElement || source instanceof HTMLVideoElement) {
         audioSourceNode = audioContext.createMediaElementSource(source);
-        audioSourceNode.connect(analyser);
-        // Do NOT connect to destination, the main visualizer or audio element handles playback.
-      } catch (e) {
-        // Likely already has a source node from the main visualizer
+      } else {
         return;
       }
-    } else {
+      audioSourceNode.connect(analyser);
+    } catch (e) {
+      // Handle cases where element is already connected to another context
+      console.warn('RawMonitor: Source already connected or invalid', e);
       return;
     }
 
@@ -57,7 +51,7 @@ export const RawMonitor: React.FC<RawMonitorProps> = ({ source }) => {
 
       ctx.clearRect(0, 0, width, height);
       ctx.lineWidth = 1.5;
-      ctx.strokeStyle = '#4ade80'; // Emerald 400 for oscilloscope look
+      ctx.strokeStyle = '#4ade80'; // Emerald 400
       ctx.beginPath();
 
       const sliceWidth = width / bufferLength;
@@ -79,7 +73,9 @@ export const RawMonitor: React.FC<RawMonitorProps> = ({ source }) => {
 
     return () => {
       if (animationFrameRef.current) cancelAnimationFrame(animationFrameRef.current);
-      if (audioContextRef.current) audioContextRef.current.close();
+      if (audioContextRef.current) {
+        audioContextRef.current.close().catch(() => {});
+      }
     };
   }, [source]);
 

@@ -1,11 +1,9 @@
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { WaveformVisualizer, VisualizerMode } from './components/WaveformVisualizer';
-import { RawMonitor } from './components/RawMonitor';
 import { 
   Mic, 
   MicOff, 
-  Settings, 
   Activity, 
   BarChart3, 
   Waves, 
@@ -33,12 +31,39 @@ const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [sensitivity, setSensitivity] = useState(1.0);
   const [mode, setMode] = useState<VisualizerMode>('waveform');
+  const [pendingFullscreen, setPendingFullscreen] = useState(false);
   
-  const audioElementRef = useRef<HTMLAudioElement | null>(null);
+  const videoElementRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Synchronize fullscreen state with browser events (e.g. Esc key)
+  // Parse URL Parameters on mount
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const urlParam = params.get('url');
+    const modeParam = params.get('mode') as VisualizerMode;
+    const fullscreenParam = params.get('fullscreen') === 'true';
+    const sensitivityParam = params.get('sensitivity');
+
+    if (urlParam) {
+      setStreamUrl(urlParam);
+      setSourceType('url');
+    }
+    
+    if (modeParam && ['waveform', 'bars', 'radial', 'particles'].includes(modeParam)) {
+      setMode(modeParam);
+    }
+
+    if (fullscreenParam) {
+      setPendingFullscreen(true);
+    }
+
+    if (sensitivityParam) {
+      const s = parseFloat(sensitivityParam);
+      if (!isNaN(s)) setSensitivity(s);
+    }
+  }, []);
+
   useEffect(() => {
     const handleFullscreenChange = () => {
       setIsFullscreen(!!document.fullscreenElement);
@@ -47,17 +72,20 @@ const App: React.FC = () => {
     return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
   }, []);
 
-  const toggleFullscreen = useCallback(() => {
+  const requestFullscreen = useCallback(() => {
     if (!containerRef.current) return;
-    
+    containerRef.current.requestFullscreen().catch(err => {
+      console.error(`Error attempting to enable full-screen mode: ${err.message}`);
+    });
+  }, []);
+
+  const toggleFullscreen = useCallback(() => {
     if (!document.fullscreenElement) {
-      containerRef.current.requestFullscreen().catch(err => {
-        console.error(`Error attempting to enable full-screen mode: ${err.message}`);
-      });
+      requestFullscreen();
     } else {
       document.exitFullscreen();
     }
-  }, []);
+  }, [requestFullscreen]);
 
   const stopAudio = useCallback(() => {
     if (stream) {
@@ -68,24 +96,25 @@ const App: React.FC = () => {
       hlsRef.current.destroy();
       hlsRef.current = null;
     }
-    if (audioElementRef.current) {
-      audioElementRef.current.pause();
-      audioElementRef.current.src = "";
-      // Remove listeners
-      audioElementRef.current.onwaiting = null;
-      audioElementRef.current.onplaying = null;
-      audioElementRef.current.onstalled = null;
+    if (videoElementRef.current) {
+      videoElementRef.current.pause();
+      videoElementRef.current.src = "";
+      videoElementRef.current.removeAttribute('src');
+      videoElementRef.current.load();
+      videoElementRef.current.onwaiting = null;
+      videoElementRef.current.onplaying = null;
+      videoElementRef.current.onstalled = null;
     }
     setIsActive(false);
     setIsLoading(false);
     setIsBuffering(false);
   }, [stream]);
 
-  const setupAudioListeners = (audio: HTMLAudioElement) => {
-    audio.onwaiting = () => setIsBuffering(true);
-    audio.onplaying = () => setIsBuffering(false);
-    audio.onstalled = () => setIsBuffering(true);
-    audio.oncanplay = () => setIsBuffering(false);
+  const setupAudioListeners = (video: HTMLVideoElement) => {
+    video.onwaiting = () => setIsBuffering(true);
+    video.onplaying = () => setIsBuffering(false);
+    video.onstalled = () => setIsBuffering(true);
+    video.oncanplay = () => setIsBuffering(false);
   };
 
   const startAudio = useCallback(async () => {
@@ -116,25 +145,29 @@ const App: React.FC = () => {
         return;
       }
 
-      const audio = audioElementRef.current;
-      if (!audio) {
+      const video = videoElementRef.current;
+      if (!video) {
         setIsLoading(false);
         return;
       }
 
-      setupAudioListeners(audio);
+      setupAudioListeners(video);
+      video.crossOrigin = "anonymous";
+      
       const isHls = streamUrl.toLowerCase().includes('.m3u8');
 
       if (isHls && Hls.isSupported()) {
-        const hls = new Hls();
+        const hls = new Hls({
+          enableWorker: true,
+          lowLatencyMode: true
+        });
         hls.loadSource(streamUrl);
-        hls.attachMedia(audio);
+        hls.attachMedia(video);
         hlsRef.current = hls;
         
         hls.on(Hls.Events.MANIFEST_PARSED, async () => {
           try {
-            audio.crossOrigin = "anonymous";
-            await audio.play();
+            await video.play();
             setIsActive(true);
             setIsLoading(false);
           } catch (e) {
@@ -145,17 +178,15 @@ const App: React.FC = () => {
 
         hls.on(Hls.Events.ERROR, (event, data) => {
           if (data.fatal) {
-            setError(`Stream error: ${data.type}`);
+            setError(`Stream error: ${data.details}`);
             stopAudio();
           }
         });
-      } else if (audio.canPlayType('application/vnd.apple.mpegurl')) {
-        // Native HLS support (Safari)
-        audio.src = streamUrl;
-        audio.crossOrigin = "anonymous";
-        audio.addEventListener('loadedmetadata', async () => {
+      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = streamUrl;
+        video.addEventListener('loadedmetadata', async () => {
           try {
-            await audio.play();
+            await video.play();
             setIsActive(true);
             setIsLoading(false);
           } catch (e) {
@@ -164,15 +195,13 @@ const App: React.FC = () => {
           }
         }, { once: true });
       } else {
-        // Regular audio URL
         try {
-          audio.src = streamUrl;
-          audio.crossOrigin = "anonymous";
-          await audio.play();
+          video.src = streamUrl;
+          await video.play();
           setIsActive(true);
           setIsLoading(false);
         } catch (err) {
-          setError('Format not supported or CORS error. Ensure the URL is valid.');
+          setError('Source error or CORS block. Ensure the URL is valid.');
           setIsLoading(false);
           console.error('Error playing stream:', err);
         }
@@ -184,6 +213,13 @@ const App: React.FC = () => {
     if (isActive || isLoading) {
       stopAudio();
     } else {
+      // Handle automatic fullscreen if requested via URL param
+      if (pendingFullscreen) {
+        // We must call requestFullscreen here to satisfy the user gesture requirement
+        // even before state updates, as long as containerRef.current is stable.
+        requestFullscreen();
+        setPendingFullscreen(false);
+      }
       startAudio();
     }
   };
@@ -197,7 +233,12 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-between p-4 md:p-8 font-sans selection:bg-indigo-500/30">
-      <audio ref={audioElementRef} className="hidden" />
+      <video 
+        ref={videoElementRef} 
+        className="hidden" 
+        crossOrigin="anonymous" 
+        playsInline 
+      />
 
       <header className={`w-full max-w-6xl flex justify-between items-center z-10 transition-opacity duration-300 ${isFullscreen ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
         <div className="flex items-center gap-3">
@@ -214,12 +255,6 @@ const App: React.FC = () => {
         
         <div className="flex items-center gap-4">
           <div className="hidden md:flex items-center gap-4">
-            {isActive && (
-              <div className="px-3 border-r border-white/10">
-                <RawMonitor source={sourceType === 'mic' ? stream : null} />
-              </div>
-            )}
-            
             <div className="bg-slate-900/50 p-1 rounded-xl border border-white/5">
               {modes.map((m) => (
                 <button
@@ -243,19 +278,19 @@ const App: React.FC = () => {
       <main className="flex-1 w-full max-w-7xl flex flex-col items-center justify-center relative py-12">
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-indigo-500/5 via-transparent to-transparent pointer-events-none"></div>
         
-        {isActive ? (
-          <div className="w-full h-full flex flex-col items-center justify-center gap-8 relative">
-            <div 
-              ref={containerRef}
-              className={`relative flex justify-center transition-all duration-500 rounded-xl overflow-hidden bg-slate-950 ${isFullscreen ? 'fixed inset-0 z-[100] w-screen h-screen' : 'w-full max-w-4xl h-64 md:h-96 shadow-2xl border border-white/5'}`}
-            >
+        {/* We keep the containerRef div always rendered so requestFullscreen can be called on user gesture */}
+        <div 
+          ref={containerRef}
+          className={`relative flex justify-center transition-all duration-500 overflow-hidden bg-slate-950 w-full max-w-4xl ${isActive ? 'h-64 md:h-96' : 'h-0 opacity-0'} ${isFullscreen ? 'fixed inset-0 z-[100] w-screen h-screen max-w-none' : 'rounded-xl shadow-2xl border border-white/5'}`}
+        >
+          {isActive && (
+            <>
               <WaveformVisualizer 
-                source={sourceType === 'mic' ? stream : audioElementRef.current} 
+                source={sourceType === 'mic' ? stream : videoElementRef.current} 
                 sensitivity={sensitivity} 
                 mode={mode} 
               />
               
-              {/* Fullscreen Toggle Overlay */}
               <button
                 onClick={toggleFullscreen}
                 className="absolute top-6 right-6 p-3 bg-slate-900/40 hover:bg-indigo-600/60 backdrop-blur-md border border-white/10 rounded-full text-white/70 hover:text-white transition-all shadow-xl z-[110] group"
@@ -268,7 +303,6 @@ const App: React.FC = () => {
                 )}
               </button>
 
-              {/* Buffering Indicator */}
               {isBuffering && (
                 <div className="absolute inset-0 flex items-center justify-center bg-slate-950/40 backdrop-blur-[2px] rounded-xl transition-all duration-300 z-[105]">
                   <div className="flex flex-col items-center gap-3 bg-slate-900/80 px-6 py-4 rounded-2xl border border-white/10 shadow-2xl">
@@ -277,22 +311,11 @@ const App: React.FC = () => {
                   </div>
                 </div>
               )}
-            </div>
-            
-            {!isFullscreen && (
-              <div className="flex flex-col items-center gap-2 animate-pulse">
-                <span className="text-indigo-400 text-sm font-semibold tracking-wider uppercase">
-                  {sourceType === 'mic' ? 'Microphone Active' : 'Streaming Active'}
-                </span>
-                <div className="flex gap-1">
-                  <div className="w-1.5 h-1.5 bg-indigo-400 rounded-full"></div>
-                  <div className="w-1.5 h-1.5 bg-indigo-400/60 rounded-full"></div>
-                  <div className="w-1.5 h-1.5 bg-indigo-400/30 rounded-full"></div>
-                </div>
-              </div>
-            )}
-          </div>
-        ) : (
+            </>
+          )}
+        </div>
+
+        {!isActive && (
           <div className="text-center space-y-8 max-w-xl px-4 z-10">
             <div className="mx-auto w-24 h-24 rounded-full bg-slate-900 border border-slate-800 flex items-center justify-center mb-4 shadow-2xl relative">
               {isLoading ? (
@@ -329,7 +352,9 @@ const App: React.FC = () => {
                   disabled={isLoading}
                   placeholder="Enter .m3u8 or audio URL..."
                   value={streamUrl}
-                  onChange={(e) => setStreamUrl(e.target.value)}
+                  onChange={(e) => {
+                    setStreamUrl(e.target.value);
+                  }}
                   className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all pr-12 disabled:opacity-50"
                 />
                 <Globe className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-600" />
@@ -345,6 +370,19 @@ const App: React.FC = () => {
                 {error}
               </div>
             )}
+          </div>
+        )}
+
+        {isActive && !isFullscreen && (
+          <div className="flex flex-col items-center gap-2 animate-pulse mt-8">
+            <span className="text-indigo-400 text-sm font-semibold tracking-wider uppercase">
+              {sourceType === 'mic' ? 'Microphone Active' : 'Streaming Active'}
+            </span>
+            <div className="flex gap-1">
+              <div className="w-1.5 h-1.5 bg-indigo-400 rounded-full"></div>
+              <div className="w-1.5 h-1.5 bg-indigo-400/60 rounded-full"></div>
+              <div className="w-1.5 h-1.5 bg-indigo-400/30 rounded-full"></div>
+            </div>
           </div>
         )}
       </main>
@@ -400,5 +438,4 @@ const App: React.FC = () => {
   );
 };
 
-// Fix for index.tsx: Export the component as default
 export default App;
