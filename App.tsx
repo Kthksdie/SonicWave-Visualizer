@@ -3,19 +3,19 @@ import React, { useState, useCallback, useRef, useEffect } from 'react';
 import { WaveformVisualizer, VisualizerMode, ColorPalette } from './components/WaveformVisualizer';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { RawMonitor } from './components/RawMonitor';
-import { 
-  Mic, 
-  MicOff, 
-  Activity, 
-  BarChart3, 
-  Waves, 
-  CircleDot, 
-  Zap, 
-  Globe, 
-  Play, 
-  Square, 
-  Loader2, 
-  Maximize, 
+import {
+  Mic,
+  MicOff,
+  Activity,
+  BarChart3,
+  Waves,
+  CircleDot,
+  Zap,
+  Globe,
+  Play,
+  Square,
+  Loader2,
+  Maximize,
   Minimize,
   Clock,
   Radio,
@@ -42,7 +42,8 @@ const App: React.FC = () => {
   const [pendingFullscreen, setPendingFullscreen] = useState(false);
   const [displayTime, setDisplayTime] = useState('00:00');
   const [copied, setCopied] = useState(false);
-  
+  const [shouldAutoStart, setShouldAutoStart] = useState(false);
+
   const videoElementRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -62,8 +63,9 @@ const App: React.FC = () => {
       if (urlParam) {
         setStreamUrl(urlParam);
         setSourceType('url');
+        setShouldAutoStart(true);
       }
-      
+
       if (modeParam && ['waveform', 'bars', 'radial', 'particles'].includes(modeParam)) {
         setMode(modeParam);
       }
@@ -95,23 +97,22 @@ const App: React.FC = () => {
       if (mode !== 'waveform') params.set('mode', mode);
       if (palette !== 'indigo') params.set('palette', palette);
       if (sensitivity !== 1.0) params.set('sensitivity', sensitivity.toString());
-      
+
+      const currentParams = new URLSearchParams(window.location.search);
+      params.set('fullscreen', currentParams.get('fullscreen') || 'false');
+
       const queryString = params.toString();
       const newRelativePathQuery = window.location.pathname + (queryString ? '?' + queryString : '');
-      
+
       window.history.replaceState(null, '', newRelativePathQuery);
     } catch (e) {
       console.debug('History sync disabled: replaceState restricted.');
     }
   }, [streamUrl, sourceType, mode, palette, sensitivity]);
 
-  useEffect(() => {
-    const handleFullscreenChange = () => {
-      setIsFullscreen(!!document.fullscreenElement);
-    };
-    document.addEventListener('fullscreenchange', handleFullscreenChange);
-    return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
-  }, []);
+
+
+
 
   const formatTime = (seconds: number) => {
     if (isNaN(seconds) || !isFinite(seconds)) return '00:00';
@@ -141,20 +142,11 @@ const App: React.FC = () => {
     };
   }, [isActive, sourceType]);
 
-  const requestFullscreen = useCallback(() => {
-    if (!containerRef.current) return;
-    containerRef.current.requestFullscreen().catch(err => {
-      console.error(`Error attempting to enable full-screen mode: ${err.message}`);
-    });
-  }, []);
+
 
   const toggleFullscreen = useCallback(() => {
-    if (!document.fullscreenElement) {
-      requestFullscreen();
-    } else {
-      document.exitFullscreen().catch(() => {});
-    }
-  }, [requestFullscreen]);
+    setIsFullscreen(prev => !prev);
+  }, []);
 
   const stopAudio = useCallback(() => {
     if (stream) {
@@ -190,15 +182,15 @@ const App: React.FC = () => {
   const startAudio = useCallback(async () => {
     setError(null);
     setIsLoading(true);
-    
+
     if (sourceType === 'mic') {
       try {
-        const audioStream = await navigator.mediaDevices.getUserMedia({ 
+        const audioStream = await navigator.mediaDevices.getUserMedia({
           audio: {
             echoCancellation: true,
             noiseSuppression: true,
             autoGainControl: true
-          } 
+          }
         });
         setStream(audioStream);
         setIsActive(true);
@@ -223,7 +215,7 @@ const App: React.FC = () => {
 
       setupAudioListeners(video);
       video.crossOrigin = "anonymous";
-      
+
       const isHls = streamUrl.toLowerCase().includes('.m3u8');
 
       if (isHls && Hls.isSupported()) {
@@ -235,7 +227,7 @@ const App: React.FC = () => {
         hls.loadSource(streamUrl);
         hls.attachMedia(video);
         hlsRef.current = hls;
-        
+
         hls.on(Hls.Events.MANIFEST_PARSED, () => {
           video.play().then(() => {
             setIsActive(true);
@@ -299,12 +291,24 @@ const App: React.FC = () => {
       stopAudio();
     } else {
       if (pendingFullscreen) {
-        requestFullscreen();
+        toggleFullscreen();
         setPendingFullscreen(false);
       }
       startAudio();
     }
   };
+
+  // 3. Auto-start Effect (Moved here to avoid use-before-declaration)
+  useEffect(() => {
+    if (shouldAutoStart && sourceType === 'url' && streamUrl) {
+      if (pendingFullscreen) {
+        setIsFullscreen(true);
+        setPendingFullscreen(false);
+      }
+      startAudio();
+      setShouldAutoStart(false);
+    }
+  }, [shouldAutoStart, sourceType, streamUrl, pendingFullscreen, startAudio]);
 
   const handleShare = useCallback(() => {
     const url = window.location.href;
@@ -332,11 +336,11 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-between p-4 md:p-8 font-sans selection:bg-indigo-500/30">
-      <video 
-        ref={videoElementRef} 
-        className="hidden" 
-        crossOrigin="anonymous" 
-        playsInline 
+      <video
+        ref={videoElementRef}
+        className="hidden"
+        crossOrigin="anonymous"
+        playsInline
       />
 
       <header className={`w-full max-w-6xl flex justify-between items-center z-10 transition-opacity duration-300 ${isFullscreen ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
@@ -351,7 +355,7 @@ const App: React.FC = () => {
             <p className="text-xs text-slate-500 font-medium uppercase tracking-widest">Real-time Audio Engine</p>
           </div>
         </div>
-        
+
         <div className="flex items-center gap-4">
           {isActive && (
             <div className="hidden lg:block transition-all animate-in fade-in slide-in-from-right-4 duration-500">
@@ -364,11 +368,10 @@ const App: React.FC = () => {
                 <button
                   key={m.id}
                   onClick={() => setMode(m.id)}
-                  className={`flex items-center gap-2 px-3 py-1.5 text-sm font-medium transition-all ${
-                    mode === m.id 
-                    ? 'bg-indigo-600 text-white shadow-lg' 
+                  className={`flex items-center gap-2 px-3 py-1.5 text-sm font-medium transition-all ${mode === m.id
+                    ? 'bg-indigo-600 text-white shadow-lg'
                     : 'text-slate-400 hover:text-slate-200'
-                  }`}
+                    }`}
                 >
                   {m.icon}
                   {m.label}
@@ -378,11 +381,10 @@ const App: React.FC = () => {
 
             <button
               onClick={handleShare}
-              className={`flex items-center gap-2 px-4 py-2 text-sm font-bold border transition-all duration-300 ${
-                copied 
-                ? 'bg-emerald-600 border-emerald-500 text-white shadow-lg shadow-emerald-600/20' 
+              className={`flex items-center gap-2 px-4 py-2 text-sm font-bold border transition-all duration-300 ${copied
+                ? 'bg-emerald-600 border-emerald-500 text-white shadow-lg shadow-emerald-600/20'
                 : 'bg-slate-900 border-white/5 text-slate-400 hover:text-white hover:border-white/10'
-              }`}
+                }`}
             >
               {copied ? <Check className="w-4 h-4" /> : <Share2 className="w-4 h-4" />}
               {copied ? 'Link Copied!' : 'Share Config'}
@@ -393,18 +395,18 @@ const App: React.FC = () => {
 
       <main className="flex-1 w-full max-w-7xl flex flex-col items-center justify-center relative py-12">
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-indigo-500/5 via-transparent to-transparent pointer-events-none"></div>
-        
-        <div 
+
+        <div
           ref={containerRef}
-          className={`relative flex justify-center transition-all duration-500 overflow-hidden bg-slate-950 w-full max-w-4xl rounded-none ${isActive ? 'h-64 md:h-96' : 'h-0 opacity-0'} ${isFullscreen ? 'fixed inset-0 z-[100] w-screen h-screen max-w-none border-none' : 'shadow-2xl border border-white/5'}`}
+          className={`flex justify-center transition-all duration-500 overflow-hidden bg-slate-950 w-full rounded-none ${isActive && !isFullscreen ? 'h-64 md:h-96' : ''} ${!isActive ? 'h-0 opacity-0' : ''} ${isFullscreen ? 'fixed inset-0 z-[100] w-screen h-screen max-w-none border-none' : 'relative max-w-4xl shadow-2xl border border-white/5'}`}
         >
           {isActive && (
             <>
               <ErrorBoundary>
-                <WaveformVisualizer 
-                  source={sourceType === 'mic' ? stream : videoElementRef.current} 
-                  sensitivity={sensitivity} 
-                  mode={mode} 
+                <WaveformVisualizer
+                  source={sourceType === 'mic' ? stream : videoElementRef.current}
+                  sensitivity={sensitivity}
+                  mode={mode}
                   palette={palette}
                 />
               </ErrorBoundary>
@@ -418,7 +420,7 @@ const App: React.FC = () => {
                   <span className="text-[10px] bg-red-500 px-1.5 py-0.5 rounded-none text-white font-black uppercase tracking-tighter ml-1">Live</span>
                 )}
               </div>
-              
+
               <button
                 onClick={toggleFullscreen}
                 className="absolute top-6 right-6 p-3 bg-slate-900/40 hover:bg-indigo-600/60 backdrop-blur-md border border-white/10 text-white/70 hover:text-white transition-all shadow-xl z-[110] group rounded-none"
@@ -452,18 +454,18 @@ const App: React.FC = () => {
                 sourceType === 'mic' ? <MicOff className="w-10 h-10 text-slate-600" /> : <Globe className="w-10 h-10 text-slate-600" />
               )}
             </div>
-            
+
             <div className="space-y-4">
               <h2 className="text-3xl font-bold text-white tracking-tight uppercase">Select Audio Source</h2>
               <div className="flex justify-center gap-4">
-                <button 
+                <button
                   disabled={isLoading}
                   onClick={() => { setSourceType('mic'); setError(null); }}
                   className={`flex items-center gap-2 px-6 py-2 border transition-all rounded-none ${sourceType === 'mic' ? 'bg-indigo-600 border-indigo-500 text-white shadow-lg shadow-indigo-600/20' : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700 disabled:opacity-50'}`}
                 >
                   <Mic className="w-4 h-4" /> Microphone
                 </button>
-                <button 
+                <button
                   disabled={isLoading}
                   onClick={() => { setSourceType('url'); setError(null); }}
                   className={`flex items-center gap-2 px-6 py-2 border transition-all rounded-none ${sourceType === 'url' ? 'bg-indigo-600 border-indigo-500 text-white shadow-lg shadow-indigo-600/20' : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700 disabled:opacity-50'}`}
@@ -475,8 +477,8 @@ const App: React.FC = () => {
 
             {sourceType === 'url' && (
               <div className="relative max-md:max-w-xs mx-auto">
-                <input 
-                  type="text" 
+                <input
+                  type="text"
                   disabled={isLoading}
                   placeholder="Enter .m3u8 or audio URL..."
                   value={streamUrl}
@@ -535,13 +537,13 @@ const App: React.FC = () => {
           </div>
 
           <div className="flex flex-col items-center gap-2">
-             <button 
+            <button
               disabled={isLoading && !isActive}
               onClick={toggleAudio}
               className={`
                 flex items-center gap-3 px-10 py-3 font-bold transition-all duration-300 transform hover:scale-105 active:scale-95 disabled:opacity-50 rounded-none
-                ${isActive 
-                  ? 'bg-red-500 hover:bg-red-600 text-white shadow-lg shadow-red-500/20' 
+                ${isActive
+                  ? 'bg-red-500 hover:bg-red-600 text-white shadow-lg shadow-red-500/20'
                   : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/30'}
               `}
             >
@@ -569,12 +571,12 @@ const App: React.FC = () => {
               <span>Sensitivity</span>
               <span className="text-indigo-400 font-mono">{(sensitivity * 100).toFixed(0)}%</span>
             </div>
-            <input 
-              type="range" 
-              min="0.1" 
-              max="5" 
-              step="0.1" 
-              value={sensitivity} 
+            <input
+              type="range"
+              min="0.1"
+              max="5"
+              step="0.1"
+              value={sensitivity}
               onChange={(e) => setSensitivity(parseFloat(e.target.value))}
               className="w-full h-1.5 bg-slate-800 rounded-none appearance-none cursor-pointer accent-indigo-500"
             />
