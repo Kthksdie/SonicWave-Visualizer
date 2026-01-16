@@ -41,6 +41,7 @@ const App: React.FC = () => {
   const [palette, setPalette] = useState<ColorPalette>('indigo');
   const [pendingFullscreen, setPendingFullscreen] = useState(false);
   const [displayTime, setDisplayTime] = useState('00:00');
+  const [timeSource, setTimeSource] = useState('');
   const [copied, setCopied] = useState(false);
   const [shouldAutoStart, setShouldAutoStart] = useState(false);
 
@@ -60,9 +61,14 @@ const App: React.FC = () => {
       const fullscreenParam = params.get('fullscreen') === 'true';
       const sensitivityParam = params.get('sensitivity');
 
+      const micParam = params.get('mic') === 'true';
+
       if (urlParam) {
         setStreamUrl(urlParam);
         setSourceType('url');
+        setShouldAutoStart(true);
+      } else if (micParam) {
+        setSourceType('mic');
         setShouldAutoStart(true);
       }
 
@@ -110,10 +116,6 @@ const App: React.FC = () => {
     }
   }, [streamUrl, sourceType, mode, palette, sensitivity]);
 
-
-
-
-
   const formatTime = (seconds: number) => {
     if (isNaN(seconds) || !isFinite(seconds)) return '00:00';
     const hrs = Math.floor(seconds / 3600);
@@ -122,20 +124,36 @@ const App: React.FC = () => {
     return `${hrs > 0 ? hrs.toString().padStart(2, '0') + ':' : ''}${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
   };
 
+
   useEffect(() => {
     if (isActive) {
       sessionStartTimeRef.current = Date.now();
       timerRef.current = window.setInterval(() => {
         if (sourceType === 'url' && videoElementRef.current) {
-          setDisplayTime(formatTime(videoElementRef.current.currentTime));
+          if (hlsRef.current && hlsRef.current.playingDate) {
+            setDisplayTime(hlsRef.current.playingDate.toISOString());
+            setTimeSource('Stream Metadata (Program Date Time)');
+          } else if (videoElementRef.current.duration === Infinity) {
+            // 1. Explicit Live Stream (no PDT tags found): Use Wall Clock
+            setDisplayTime(new Date().toISOString());
+            setTimeSource('Live Fallback (System Wall Clock)');
+          } else {
+            // 2. VOD or Stream without PDT: Calculate "Session Time" (Start + Offset)
+            // This fulfills "current time the stream started and ticking"
+            const sessionTime = new Date(sessionStartTimeRef.current + (videoElementRef.current.currentTime * 1000));
+            setDisplayTime(sessionTime.toISOString());
+            setTimeSource('Session Time (Start + Offset)');
+          }
         } else {
-          const elapsed = (Date.now() - sessionStartTimeRef.current) / 1000;
-          setDisplayTime(formatTime(elapsed));
+          // Microphone / Non-URL source: Use Wall Clock
+          setDisplayTime(new Date().toISOString());
+          setTimeSource('Session Time (Wall Clock)');
         }
-      }, 500);
+      }, 50);
     } else {
       if (timerRef.current) clearInterval(timerRef.current);
       setDisplayTime('00:00');
+      setTimeSource('');
     }
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
@@ -300,13 +318,17 @@ const App: React.FC = () => {
 
   // 3. Auto-start Effect (Moved here to avoid use-before-declaration)
   useEffect(() => {
-    if (shouldAutoStart && sourceType === 'url' && streamUrl) {
-      if (pendingFullscreen) {
-        setIsFullscreen(true);
-        setPendingFullscreen(false);
+    if (shouldAutoStart) {
+      const readyToStart = (sourceType === 'url' && streamUrl) || sourceType === 'mic';
+
+      if (readyToStart) {
+        if (pendingFullscreen) {
+          setIsFullscreen(true);
+          setPendingFullscreen(false);
+        }
+        startAudio();
+        setShouldAutoStart(false);
       }
-      startAudio();
-      setShouldAutoStart(false);
     }
   }, [shouldAutoStart, sourceType, streamUrl, pendingFullscreen, startAudio]);
 
@@ -387,7 +409,7 @@ const App: React.FC = () => {
                 }`}
             >
               {copied ? <Check className="w-4 h-4" /> : <Share2 className="w-4 h-4" />}
-              {copied ? 'Link Copied!' : 'Share Config'}
+              {copied ? 'Copied!' : 'Share'}
             </button>
           </div>
         </div>
@@ -411,7 +433,7 @@ const App: React.FC = () => {
                 />
               </ErrorBoundary>
 
-              <div className="absolute top-6 left-6 flex items-center gap-3 bg-slate-900/40 backdrop-blur-md border border-white/10 px-4 py-2 text-white/90 z-[110] shadow-xl pointer-events-none rounded-none">
+              <div title={timeSource} className="absolute top-6 left-6 flex items-center gap-3 bg-slate-900/40 backdrop-blur-md border border-white/10 px-4 py-2 text-white/90 z-[110] shadow-xl pointer-events-none rounded-none cursor-help pointer-events-auto">
                 {sourceType === 'url' ? <Clock className="w-4 h-4 text-indigo-400" /> : <Radio className="w-4 h-4 text-red-500 animate-pulse" />}
                 <span className="text-sm font-mono font-bold tracking-wider tabular-nums">
                   {displayTime}
