@@ -55,6 +55,27 @@ npm run build
 3.  **Switch Modes**: Use the navigation bar at the top to toggle between different visualization algorithms.
 4.  **Adjust Sensitivity**: Use the slider in the footer to scale the visualization intensity.
 
+## 🔗 Configuration via URL
+
+You can pre-configure and auto-start the visualizer using URL parameters. This is useful for sharing specific setups or integrating with other tools (like OBS).
+
+| Parameter | Type | Description | Example |
+| :--- | :--- | :--- | :--- |
+| `url` | `string` | **Auto-starts** the visualizer with the specified audio/stream URL. | `?url=https://example.com/stream.m3u8` |
+| `mic` | `boolean` | If `true`, **auto-starts** the visualizer using the microphone. | `?mic=true` |
+| `mode` | `string` | Sets the initial visualization mode. Options: `waveform`, `bars`, `radial`, `particles`. | `?mode=radial` |
+| `palette` | `string` | Sets the initial color palette. Options: `indigo`, `emerald`, `rose`, `amber`, `cyan`, `violet`. | `?palette=cyan` |
+| `fullscreen` | `boolean` | If `true`, the app loads in fullscreen mode (ideal for OBS browser sources). | `?fullscreen=true` |
+| `sensitivity` | `number` | Sets the initial audio sensitivity (0.1 - 5.0). | `?sensitivity=2.5` |
+
+**Example Scenarios:**
+
+- **Start with mic in radial mode:**
+  `https://your-app.com/?mic=true&mode=radial`
+
+- **Stream a URL in fullscreen (for OBS):**
+  `https://your-app.com/?url=https://stream.url/audio.m3u8&fullscreen=true`
+
 ## 🛡️ Permissions
 
 This application requires:
