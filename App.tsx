@@ -1,6 +1,6 @@
 
 import React, { useState, useCallback, useRef, useEffect } from 'react';
-import { WaveformVisualizer, VisualizerMode } from './components/WaveformVisualizer';
+import { WaveformVisualizer, VisualizerMode, ColorPalette } from './components/WaveformVisualizer';
 import { 
   Mic, 
   MicOff, 
@@ -14,7 +14,10 @@ import {
   Square, 
   Loader2, 
   Maximize, 
-  Minimize 
+  Minimize,
+  Clock,
+  Radio,
+  Palette
 } from 'lucide-react';
 import Hls from 'hls.js';
 
@@ -31,17 +34,22 @@ const App: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [sensitivity, setSensitivity] = useState(1.0);
   const [mode, setMode] = useState<VisualizerMode>('waveform');
+  const [palette, setPalette] = useState<ColorPalette>('indigo');
   const [pendingFullscreen, setPendingFullscreen] = useState(false);
+  const [displayTime, setDisplayTime] = useState('00:00');
   
   const videoElementRef = useRef<HTMLVideoElement | null>(null);
   const hlsRef = useRef<Hls | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const timerRef = useRef<number | null>(null);
+  const sessionStartTimeRef = useRef<number>(0);
 
-  // Parse URL Parameters on mount
+  // 1. Parse URL Parameters on mount
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const urlParam = params.get('url');
     const modeParam = params.get('mode') as VisualizerMode;
+    const paletteParam = params.get('palette') as ColorPalette;
     const fullscreenParam = params.get('fullscreen') === 'true';
     const sensitivityParam = params.get('sensitivity');
 
@@ -54,6 +62,10 @@ const App: React.FC = () => {
       setMode(modeParam);
     }
 
+    if (paletteParam && ['indigo', 'emerald', 'rose', 'amber', 'cyan', 'violet'].includes(paletteParam)) {
+      setPalette(paletteParam);
+    }
+
     if (fullscreenParam) {
       setPendingFullscreen(true);
     }
@@ -64,6 +76,18 @@ const App: React.FC = () => {
     }
   }, []);
 
+  // 2. Synchronize State back to URL
+  useEffect(() => {
+    const params = new URLSearchParams();
+    if (streamUrl && sourceType === 'url') params.set('url', streamUrl);
+    if (mode !== 'waveform') params.set('mode', mode);
+    if (palette !== 'indigo') params.set('palette', palette);
+    if (sensitivity !== 1.0) params.set('sensitivity', sensitivity.toString());
+    
+    const newRelativePathQuery = window.location.pathname + (params.toString() ? '?' + params.toString() : '');
+    window.history.replaceState(null, '', newRelativePathQuery);
+  }, [streamUrl, sourceType, mode, palette, sensitivity]);
+
   useEffect(() => {
     const handleFullscreenChange = () => {
       setIsFullscreen(!!document.fullscreenElement);
@@ -71,6 +95,35 @@ const App: React.FC = () => {
     document.addEventListener('fullscreenchange', handleFullscreenChange);
     return () => document.removeEventListener('fullscreenchange', handleFullscreenChange);
   }, []);
+
+  const formatTime = (seconds: number) => {
+    if (isNaN(seconds) || !isFinite(seconds)) return '00:00';
+    const hrs = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    const secs = Math.floor(seconds % 60);
+    return `${hrs > 0 ? hrs.toString().padStart(2, '0') + ':' : ''}${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  // Timestamp update loop
+  useEffect(() => {
+    if (isActive) {
+      sessionStartTimeRef.current = Date.now();
+      timerRef.current = window.setInterval(() => {
+        if (sourceType === 'url' && videoElementRef.current) {
+          setDisplayTime(formatTime(videoElementRef.current.currentTime));
+        } else {
+          const elapsed = (Date.now() - sessionStartTimeRef.current) / 1000;
+          setDisplayTime(formatTime(elapsed));
+        }
+      }, 500);
+    } else {
+      if (timerRef.current) clearInterval(timerRef.current);
+      setDisplayTime('00:00');
+    }
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, [isActive, sourceType]);
 
   const requestFullscreen = useCallback(() => {
     if (!containerRef.current) return;
@@ -83,7 +136,7 @@ const App: React.FC = () => {
     if (!document.fullscreenElement) {
       requestFullscreen();
     } else {
-      document.exitFullscreen();
+      document.exitFullscreen().catch(() => {});
     }
   }, [requestFullscreen]);
 
@@ -97,13 +150,14 @@ const App: React.FC = () => {
       hlsRef.current = null;
     }
     if (videoElementRef.current) {
-      videoElementRef.current.pause();
-      videoElementRef.current.src = "";
-      videoElementRef.current.removeAttribute('src');
-      videoElementRef.current.load();
-      videoElementRef.current.onwaiting = null;
-      videoElementRef.current.onplaying = null;
-      videoElementRef.current.onstalled = null;
+      const video = videoElementRef.current;
+      video.pause();
+      video.src = "";
+      video.load();
+      video.onwaiting = null;
+      video.onplaying = null;
+      video.onstalled = null;
+      video.oncanplay = null;
     }
     setIsActive(false);
     setIsLoading(false);
@@ -159,51 +213,70 @@ const App: React.FC = () => {
       if (isHls && Hls.isSupported()) {
         const hls = new Hls({
           enableWorker: true,
-          lowLatencyMode: true
+          lowLatencyMode: true,
+          backBufferLength: 60
         });
         hls.loadSource(streamUrl);
         hls.attachMedia(video);
         hlsRef.current = hls;
         
-        hls.on(Hls.Events.MANIFEST_PARSED, async () => {
-          try {
-            await video.play();
+        hls.on(Hls.Events.MANIFEST_PARSED, () => {
+          video.play().then(() => {
             setIsActive(true);
             setIsLoading(false);
-          } catch (e) {
-            setError('Playback blocked. Click start again.');
-            setIsLoading(false);
-          }
+          }).catch((err) => {
+            if (err.name !== 'AbortError') {
+              setError('Playback blocked. Ensure your browser allows autoplay.');
+              setIsLoading(false);
+            }
+          });
         });
 
         hls.on(Hls.Events.ERROR, (event, data) => {
           if (data.fatal) {
-            setError(`Stream error: ${data.details}`);
-            stopAudio();
+            switch (data.type) {
+              case Hls.ErrorTypes.NETWORK_ERROR:
+                hls.startLoad();
+                break;
+              case Hls.ErrorTypes.MEDIA_ERROR:
+                hls.recoverMediaError();
+                break;
+              default:
+                setError(`Fatal stream error: ${data.details}`);
+                stopAudio();
+                break;
+            }
           }
         });
       } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
         video.src = streamUrl;
-        video.addEventListener('loadedmetadata', async () => {
-          try {
-            await video.play();
+        const playNative = () => {
+          video.play().then(() => {
             setIsActive(true);
             setIsLoading(false);
-          } catch (e) {
-            setError('Playback blocked by browser.');
-            setIsLoading(false);
-          }
-        }, { once: true });
+          }).catch(err => {
+            if (err.name !== 'AbortError') {
+              setError('Autoplay blocked by browser.');
+              setIsLoading(false);
+            }
+          });
+        };
+        video.addEventListener('loadedmetadata', playNative, { once: true });
       } else {
         try {
           video.src = streamUrl;
-          await video.play();
-          setIsActive(true);
-          setIsLoading(false);
+          video.play().then(() => {
+            setIsActive(true);
+            setIsLoading(false);
+          }).catch((err) => {
+            if (err.name !== 'AbortError') {
+              setError('Stream URL failed to load or autoplay was blocked.');
+              setIsLoading(false);
+            }
+          });
         } catch (err) {
-          setError('Source error or CORS block. Ensure the URL is valid.');
+          setError('Source error. Ensure the URL is valid.');
           setIsLoading(false);
-          console.error('Error playing stream:', err);
         }
       }
     }
@@ -213,10 +286,7 @@ const App: React.FC = () => {
     if (isActive || isLoading) {
       stopAudio();
     } else {
-      // Handle automatic fullscreen if requested via URL param
       if (pendingFullscreen) {
-        // We must call requestFullscreen here to satisfy the user gesture requirement
-        // even before state updates, as long as containerRef.current is stable.
         requestFullscreen();
         setPendingFullscreen(false);
       }
@@ -229,6 +299,15 @@ const App: React.FC = () => {
     { id: 'bars', icon: <BarChart3 className="w-4 h-4" />, label: 'Spectrum' },
     { id: 'radial', icon: <CircleDot className="w-4 h-4" />, label: 'Radial' },
     { id: 'particles', icon: <Zap className="w-4 h-4" />, label: 'Pulse' },
+  ];
+
+  const palettes: { id: ColorPalette; color: string; label: string }[] = [
+    { id: 'indigo', color: 'bg-indigo-500', label: 'Indigo' },
+    { id: 'emerald', color: 'bg-emerald-500', label: 'Emerald' },
+    { id: 'rose', color: 'bg-rose-500', label: 'Rose' },
+    { id: 'amber', color: 'bg-amber-500', label: 'Amber' },
+    { id: 'cyan', color: 'bg-cyan-500', label: 'Cyan' },
+    { id: 'violet', color: 'bg-violet-500', label: 'Violet' },
   ];
 
   return (
@@ -278,7 +357,6 @@ const App: React.FC = () => {
       <main className="flex-1 w-full max-w-7xl flex flex-col items-center justify-center relative py-12">
         <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-indigo-500/5 via-transparent to-transparent pointer-events-none"></div>
         
-        {/* We keep the containerRef div always rendered so requestFullscreen can be called on user gesture */}
         <div 
           ref={containerRef}
           className={`relative flex justify-center transition-all duration-500 overflow-hidden bg-slate-950 w-full max-w-4xl ${isActive ? 'h-64 md:h-96' : 'h-0 opacity-0'} ${isFullscreen ? 'fixed inset-0 z-[100] w-screen h-screen max-w-none' : 'rounded-xl shadow-2xl border border-white/5'}`}
@@ -289,7 +367,18 @@ const App: React.FC = () => {
                 source={sourceType === 'mic' ? stream : videoElementRef.current} 
                 sensitivity={sensitivity} 
                 mode={mode} 
+                palette={palette}
               />
+
+              <div className="absolute top-6 left-6 flex items-center gap-3 bg-slate-900/40 backdrop-blur-md border border-white/10 rounded-full px-4 py-2 text-white/90 z-[110] shadow-xl pointer-events-none">
+                {sourceType === 'url' ? <Clock className="w-4 h-4 text-indigo-400" /> : <Radio className="w-4 h-4 text-red-500 animate-pulse" />}
+                <span className="text-sm font-mono font-bold tracking-wider tabular-nums">
+                  {displayTime}
+                </span>
+                {sourceType === 'mic' && (
+                  <span className="text-[10px] bg-red-500 px-1.5 py-0.5 rounded text-white font-black uppercase tracking-tighter ml-1">Live</span>
+                )}
+              </div>
               
               <button
                 onClick={toggleFullscreen}
@@ -353,6 +442,7 @@ const App: React.FC = () => {
                   placeholder="Enter .m3u8 or audio URL..."
                   value={streamUrl}
                   onChange={(e) => {
+                    setSourceType('url');
                     setStreamUrl(e.target.value);
                   }}
                   className="w-full bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all pr-12 disabled:opacity-50"
@@ -387,12 +477,58 @@ const App: React.FC = () => {
         )}
       </main>
 
-      <footer className={`w-full max-w-xl bg-slate-900/50 backdrop-blur-xl border border-white/5 rounded-2xl p-6 shadow-2xl z-20 mb-4 transition-all duration-300 ${isFullscreen ? 'opacity-0 translate-y-10 pointer-events-none' : 'opacity-100 translate-y-0'}`}>
-        <div className="flex flex-col md:flex-row items-center justify-between gap-6">
-          <div className="flex-1 w-full space-y-2">
-            <div className="flex justify-between text-xs font-medium text-slate-400">
-              <span>Dynamic Gain</span>
-              <span>{(sensitivity * 100).toFixed(0)}%</span>
+      <footer className={`w-full max-w-4xl bg-slate-900/50 backdrop-blur-xl border border-white/5 rounded-2xl p-6 shadow-2xl z-20 mb-4 transition-all duration-300 ${isFullscreen ? 'opacity-0 translate-y-10 pointer-events-none' : 'opacity-100 translate-y-0'}`}>
+        <div className="grid grid-cols-1 md:grid-cols-3 items-center gap-8">
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 text-xs font-bold text-slate-500 uppercase tracking-widest">
+              <Palette className="w-3 h-3" /> Color Palette
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {palettes.map((p) => (
+                <button
+                  key={p.id}
+                  onClick={() => setPalette(p.id)}
+                  title={p.label}
+                  className={`w-7 h-7 rounded-full transition-all duration-200 border-2 ${p.color} ${palette === p.id ? 'border-white scale-125 shadow-lg' : 'border-transparent opacity-60 hover:opacity-100'}`}
+                />
+              ))}
+            </div>
+          </div>
+
+          <div className="flex flex-col items-center gap-2">
+             <button 
+              disabled={isLoading && !isActive}
+              onClick={toggleAudio}
+              className={`
+                flex items-center gap-3 px-10 py-3 rounded-full font-bold transition-all duration-300 transform hover:scale-105 active:scale-95 disabled:opacity-50
+                ${isActive 
+                  ? 'bg-red-500 hover:bg-red-600 text-white shadow-lg shadow-red-500/20' 
+                  : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/30'}
+              `}
+            >
+              {isActive ? (
+                <>
+                  <Square className="w-5 h-5 fill-current" />
+                  Stop
+                </>
+              ) : isLoading ? (
+                <>
+                  <Loader2 className="w-5 h-5 animate-spin" />
+                  Loading...
+                </>
+              ) : (
+                <>
+                  <Play className="w-5 h-5 fill-current" />
+                  Start
+                </>
+              )}
+            </button>
+          </div>
+
+          <div className="space-y-3">
+            <div className="flex justify-between text-xs font-bold text-slate-500 uppercase tracking-widest">
+              <span>Sensitivity</span>
+              <span className="text-indigo-400 font-mono">{(sensitivity * 100).toFixed(0)}%</span>
             </div>
             <input 
               type="range" 
@@ -404,34 +540,6 @@ const App: React.FC = () => {
               className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-indigo-500"
             />
           </div>
-
-          <button 
-            disabled={isLoading && !isActive}
-            onClick={toggleAudio}
-            className={`
-              flex items-center gap-3 px-8 py-3 rounded-full font-bold transition-all duration-300 transform hover:scale-105 active:scale-95 disabled:opacity-50
-              ${isActive 
-                ? 'bg-red-500 hover:bg-red-600 text-white shadow-lg shadow-red-500/20' 
-                : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/30'}
-            `}
-          >
-            {isActive ? (
-              <>
-                <Square className="w-5 h-5 fill-current" />
-                Stop
-              </>
-            ) : isLoading ? (
-              <>
-                <Loader2 className="w-5 h-5 animate-spin" />
-                Loading...
-              </>
-            ) : (
-              <>
-                <Play className="w-5 h-5 fill-current" />
-                Start
-              </>
-            )}
-          </button>
         </div>
       </footer>
     </div>
