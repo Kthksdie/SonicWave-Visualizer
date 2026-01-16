@@ -24,7 +24,7 @@ const PALETTE_COLORS: Record<ColorPalette, { primary: string; secondary: string;
 export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ source, sensitivity, mode, palette }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animationFrameRef = useRef<number | null>(null);
-  
+
   const analyserRef = useRef<AnalyserNode | null>(null);
   const timeDataRef = useRef<Uint8Array | null>(null);
   const freqDataRef = useRef<Uint8Array | null>(null);
@@ -40,13 +40,13 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ source, 
     const ctx = audioEngine.getContext();
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 512;
-    
+
     let sourceNode: AudioNode | null = null;
 
     try {
       sourceNode = audioEngine.getOrCreateSourceNode(source);
       sourceNode.connect(analyser);
-      
+
       analyserRef.current = analyser;
       timeDataRef.current = new Uint8Array(analyser.frequencyBinCount);
       freqDataRef.current = new Uint8Array(analyser.frequencyBinCount);
@@ -76,7 +76,7 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ source, 
     if (!ctx_canvas) return;
 
     const colors = PALETTE_COLORS[palette];
-    
+
     const draw = () => {
       const analyser = analyserRef.current;
       const timeData = timeDataRef.current;
@@ -85,11 +85,11 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ source, 
       if (!analyser || !timeData || !freqData) return;
 
       animationFrameRef.current = requestAnimationFrame(draw);
-      
-      audioEngine.resume().catch(() => {});
 
-      analyser.getByteTimeDomainData(timeData);
-      analyser.getByteFrequencyData(freqData);
+      audioEngine.resume().catch(() => { });
+
+      analyser.getByteTimeDomainData(timeData as any);
+      analyser.getByteFrequencyData(freqData as any);
 
       const width = canvas.width = canvas.clientWidth * window.devicePixelRatio;
       const height = canvas.height = canvas.clientHeight * window.devicePixelRatio;
@@ -121,7 +121,7 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ source, 
         ctx_canvas.fillStyle = 'rgba(2, 6, 23, 0.45)';
         ctx_canvas.fillRect(0, 0, width, height);
       }
-      
+
       ctx_canvas.lineCap = 'round';
       ctx_canvas.lineJoin = 'round';
 
@@ -131,7 +131,7 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ source, 
         gradient.addColorStop(0, colors.rgba(0));
         gradient.addColorStop(0.5, colors.primary);
         gradient.addColorStop(1, colors.rgba(0));
-        
+
         ctx_canvas.strokeStyle = gradient;
         ctx_canvas.shadowBlur = 15;
         ctx_canvas.shadowColor = colors.glow;
@@ -215,8 +215,8 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({ source, 
 
   return (
     <div className="w-full h-full relative">
-      <canvas 
-        ref={canvasRef} 
+      <canvas
+        ref={canvasRef}
         className="w-full h-full block"
       />
     </div>
