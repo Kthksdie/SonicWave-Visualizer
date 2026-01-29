@@ -82,4 +82,4 @@ This application requires:
 - **Microphone Access**: Only used locally for real-time visualization. Audio data is never recorded or transmitted to any server.
 
 ---
-*Created with ❤️ by a Senior Frontend Engineer.*
+*Created with [Gemini](https://gemini.google.com) by [Kthksdie](https://x.com/jasonlee2122).*
